@@ -8,7 +8,16 @@ Project for the March 23rd Mini Hackfest with [AI Tinkerers Durango](https://dur
 
 ## Architecture
 
-![Architecture](docs/architecture-v5.png)
+![Architecture](docs/architecture-v4.png)
+
+<details>
+<summary>Alternative diagrams</summary>
+
+| v1 | v2 | v3 | v5 |
+|:--:|:--:|:--:|:--:|
+| [![v1](docs/architecture-v1.png)](docs/architecture-v1.png) | [![v2](docs/architecture-v2.png)](docs/architecture-v2.png) | [![v3](docs/architecture-v3.png)](docs/architecture-v3.png) | [![v5](docs/architecture-v5.png)](docs/architecture-v5.png) |
+
+</details>
 
 ---
 
