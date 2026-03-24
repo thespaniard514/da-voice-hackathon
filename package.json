@@ -1,0 +1,14 @@
+{
+  "name": "da-voice-hackathon",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n bot,web -c magenta,cyan \"pnpm run dev:bot\" \"pnpm run dev:web\"",
+    "dev:bot": "cd ai-realtime && source .venv/bin/activate && python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload",
+    "dev:web": "cd ux-web && pnpm dev",
+    "setup": "cd ai-realtime && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && cd ../ux-web && pnpm install",
+    "docker": "docker compose up --build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

@@ -1,15 +1,35 @@
 import asyncio
 import os
+import sys
 import time
+from pathlib import Path
 
 import aiohttp
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from loguru import logger
 
 from .bot import run_bot
 
-load_dotenv()
+# Load .env from project root (parent of ai-realtime/)
+_project_root = Path(__file__).resolve().parent.parent.parent
+load_dotenv(_project_root / ".env")
+
+# Validate required env vars at startup
+_REQUIRED_ENV = [
+    "OPENAI_API_KEY",
+    "DAILY_API_KEY",
+    "ELEVENLABS_API_KEY",
+    "ELEVENLABS_VOICE_ID",
+]
+_missing = [v for v in _REQUIRED_ENV if not os.getenv(v)]
+if _missing:
+    logger.error(f"Missing required env vars: {', '.join(_missing)}")
+    logger.error("Copy .env.example to .env and fill in all values")
+    sys.exit(1)
+
+logger.info("✓ All required env vars loaded")
 
 app = FastAPI()
 
