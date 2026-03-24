@@ -14,7 +14,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.frameworks.rtvi.processor import RTVIProcessor, RTVIObserver
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.services.openai.tts import OpenAITTSService
+from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.adapters.schemas.function_schema import FunctionSchema
@@ -64,9 +64,16 @@ async def run_bot(room_url: str, token: str):
         settings=OpenAILLMService.Settings(model="gpt-4o-mini"),
     )
 
-    tts = OpenAITTSService(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        settings=OpenAITTSService.Settings(voice="shimmer", speed=0.9),
+    tts = ElevenLabsTTSService(
+        api_key=os.getenv("ELEVENLABS_API_KEY"),
+        settings=ElevenLabsTTSService.Settings(
+            voice=os.getenv("ELEVENLABS_VOICE_ID"),
+            model="eleven_multilingual_v2",
+            stability=0.7,
+            similarity_boost=0.85,
+            style=0.4,
+            speed=0.9,
+        ),
     )
 
     tools = ToolsSchema(
