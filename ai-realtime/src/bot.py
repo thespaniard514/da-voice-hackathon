@@ -80,6 +80,7 @@ async def run_bot(room_url: str, token: str):
     canvas_elements: list[CanvasElement] = []
     # Background state (so redraws preserve it)
     background_state: dict[str, str] = {}
+    client_participant_id: str | None = None
 
     transport = DailyTransport(
         room_url,
@@ -565,7 +566,7 @@ async def run_bot(room_url: str, token: str):
 
     task = PipelineTask(
         pipeline,
-        params=PipelineParams(allow_interruptions=True),
+        params=PipelineParams(allow_interruptions=False),
         observers=[rtvi_observer],
     )
 
@@ -620,12 +621,20 @@ async def run_bot(room_url: str, token: str):
 
     @transport.event_handler("on_first_participant_joined")
     async def on_first_participant_joined(transport, participant):
-        await transport.capture_participant_transcription(participant["id"])
-        logger.info(f"First participant joined: {participant['id']}")
+        nonlocal client_participant_id
+        client_participant_id = participant["id"]
+        await transport.capture_participant_transcription(client_participant_id)
+        logger.info(f"First participant joined: {client_participant_id}")
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
-        logger.info(f"Participant left: {participant['id']}")
+        participant_id = participant["id"]
+        logger.info(f"Participant left: {participant_id} (reason={reason})")
+        if client_participant_id and participant_id != client_participant_id:
+            logger.info(
+                f"Ignoring participant departure for non-client participant {participant_id}"
+            )
+            return
         await task.queue_frame(EndFrame())
 
     runner = PipelineRunner()
