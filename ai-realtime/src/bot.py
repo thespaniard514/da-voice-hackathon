@@ -1,9 +1,11 @@
 import asyncio
+import base64
 import json
 import os
 from typing import TypedDict
 
-from pipecat.frames.frames import EndFrame, LLMMessagesAppendFrame
+from openai import AsyncOpenAI
+from pipecat.frames.frames import EndFrame, InterruptionFrame, LLMMessagesAppendFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -97,7 +99,7 @@ async def run_bot(room_url: str, token: str):
 
     llm = OpenAILLMService(
         api_key=os.getenv("OPENAI_API_KEY"),
-        settings=OpenAILLMService.Settings(model="gpt-4o-mini"),
+        settings=OpenAILLMService.Settings(model="gpt-4o"),
     )
 
     tts = ElevenLabsTTSService(
@@ -278,6 +280,30 @@ async def run_bot(room_url: str, token: str):
                 required=[],
             ),
 
+            # --- Generate realistic painting ---
+            FunctionSchema(
+                name="generate_painting",
+                description=(
+                    "Generate a realistic Bob Ross-style oil painting based on the current canvas. "
+                    "Call this when the user wants to see what their painting would 'really' look like, "
+                    "asks for the final result, or says something like 'let's see the real painting'. "
+                    "Provide a rich, vivid description of the scene, mood, lighting, and atmosphere."
+                ),
+                properties={
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "A rich, detailed description of the painting scene, mood, lighting, "
+                            "and atmosphere. Include details about colors, time of day, weather, "
+                            "and emotional tone. Example: 'A serene winter mountain landscape at "
+                            "golden hour, with snow-capped peaks reflecting warm sunlight, "
+                            "evergreen trees in the foreground, and a peaceful frozen lake.'"
+                        ),
+                    },
+                },
+                required=["description"],
+            ),
+
             # --- Original tools ---
             FunctionSchema(
                 name="set_color",
@@ -334,27 +360,36 @@ async def run_bot(room_url: str, token: str):
                 "- Be encouraging about the user's painting attempts\n"
                 "- Suggest colors using their Bob Ross names (Sap Green, Van Dyke Brown, etc.)\n"
                 "- Keep responses concise — 1-3 sentences, as if narrating while painting\n\n"
-                "You are co-painting with the user on a shared canvas. You can:\n"
-                "1. Paint scenic shapes using draw_shape (trees, mountains, clouds, etc.)\n"
-                "2. Add basic geometric elements using add_element (rect, circle, ellipse, line, polygon, text) — each gets a unique ID\n"
-                "3. Remove specific elements using remove_element with their ID\n"
-                "4. List all current canvas elements using list_elements\n"
-                "5. Change the user's brush color using set_color\n"
-                "6. Set the background/sky using set_background\n"
-                "7. Clear the canvas to start fresh using clear_canvas\n"
-                "8. Apply a Bob Ross painterly effect using bobrossify — use this when the painting is complete!\n\n"
-                "When building a composition, use add_element for precise control over shapes. "
-                "Each element gets a unique ID so you can remove or reference it later. "
-                "When the user is happy with the painting, suggest using bobrossify to give it "
-                "that signature Bob Ross oil-painting look.\n\n"
-                "Start by welcoming the user warmly and suggesting you begin with a nice sky. "
-                "As you paint, narrate what you're doing, just like on the TV show. "
+                "CRITICAL RULE: When the user asks you to paint, draw, or add ANYTHING to the canvas, "
+                "you MUST call the appropriate tool function (draw_shape, add_element, set_background, etc.). "
+                "NEVER just describe what you would paint — actually call the tool to make it appear. "
+                "If a user says 'draw a tree', you MUST call draw_shape with shape='tree'. "
+                "If a user says 'add a circle', you MUST call add_element. "
+                "Always call the tool FIRST, then narrate what you did.\n\n"
+                "You are co-painting with the user on a shared canvas. Your tools:\n"
+                "1. draw_shape — Paint scenic shapes (tree, mountain, cloud, bush, lake, cabin, sun, path). ALWAYS call this for nature elements.\n"
+                "2. add_element — Add geometric primitives (rect, circle, ellipse, line, polygon, text) with unique IDs.\n"
+                "3. remove_element — Remove an element by ID.\n"
+                "4. list_elements — Show what's on the canvas.\n"
+                "5. set_color — Change the user's brush color.\n"
+                "6. set_background — Set a gradient background/sky. Call this to start paintings.\n"
+                "7. clear_canvas — Clear everything.\n"
+                "8. bobrossify — Apply painterly oil-painting effect when the painting is done.\n"
+                "9. generate_painting — Generate a photorealistic Bob Ross oil painting from the canvas. "
+                "You MUST call this when the user says ANY of these (or similar): "
+                "'generate masterpiece', 'show me the real painting', 'let's see the final result', "
+                "'make it realistic', 'show me what it really looks like', 'create the masterpiece', "
+                "'generate the painting', 'reveal the painting', 'finish the painting', "
+                "'make it real', or 'let's see the masterpiece'. "
+                "When calling this tool, provide a vivid description of the full scene.\n\n"
+                "When the user first connects, welcome them warmly AND call set_background to lay down a sky. "
+                "As you paint, call tools to add elements AND narrate what you're doing. "
                 "When the user paints something, comment on it encouragingly."
             ),
         }
     ]
 
-    context = LLMContext(messages, tools)
+    context = LLMContext(messages, tools, tool_choice="auto")
     context_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
@@ -510,6 +545,95 @@ async def run_bot(room_url: str, token: str):
             "Now that's a happy little painting!"
         )
 
+    def _describe_position(x: float, y: float) -> str:
+        """Convert percentage coordinates to a natural language position."""
+        h = "left" if x < 33 else "center" if x < 67 else "right"
+        v = "upper" if y < 33 else "middle" if y < 67 else "lower"
+        return f"{v}-{h}"
+
+    def _build_canvas_summary() -> str:
+        """Build a natural language description of the current canvas state."""
+        parts: list[str] = []
+
+        # Background
+        if background_state.get("color_top") and background_state.get("color_bottom"):
+            parts.append(
+                f"Background gradient from {background_state['color_top']} (top) "
+                f"to {background_state['color_bottom']} (bottom)."
+            )
+
+        # Elements
+        for el in canvas_elements:
+            el_type = el.get("element_type", "unknown")
+            x = el.get("x", 50)
+            y = el.get("y", 50)
+            pos = _describe_position(x, y)
+            color = el.get("fill", "")
+
+            if el_type.startswith("scenic_"):
+                shape_name = el_type.replace("scenic_", "")
+                parts.append(f"A {shape_name} in the {pos} area (color: {color}).")
+            else:
+                parts.append(f"A {el_type} shape in the {pos} area (color: {color}).")
+
+        if not parts:
+            return "The canvas is mostly empty."
+        return " ".join(parts)
+
+    async def handle_generate_painting(params: FunctionCallParams):
+        description: str = params.arguments.get("description", "a Bob Ross landscape")
+        canvas_summary = _build_canvas_summary()
+
+        prompt = (
+            "Create a realistic Bob Ross-style oil painting using wet-on-wet technique. "
+            f"Scene: {description}. "
+            f"Canvas elements: {canvas_summary} "
+            "Style: soft blended colors, happy little trees, dramatic lighting, "
+            "thick impasto brush strokes, oil on canvas texture, warm tones, "
+            "signature Bob Ross wet-on-wet oil painting look from 'The Joy of Painting'."
+        )
+
+        logger.info(f"Generating painting with prompt: {prompt[:200]}...")
+
+        # Let the frontend know we're generating
+        await rtvi.send_server_message({"type": "generating_painting"})
+
+        try:
+            openai_client = AsyncOpenAI()
+            result = await openai_client.images.generate(
+                model="gpt-image-1",
+                prompt=prompt,
+                n=1,
+                size="1024x1024",
+                quality="high",
+                response_format="b64_json",
+            )
+
+            # gpt-image-1 returns base64 in result.data[0].b64_json
+            image_b64 = result.data[0].b64_json
+            if not image_b64:
+                # Fallback: if b64_json is None, try URL (shouldn't happen with gpt-image-1)
+                await params.result_callback(
+                    "Hmm, looks like we had a little accident with that one. Let's try again later."
+                )
+                return
+
+            logger.info(f"Painting generated successfully ({len(image_b64)} chars base64)")
+            await rtvi.send_server_message({
+                "type": "generated_painting",
+                "image": image_b64,
+            })
+            await params.result_callback(
+                "And there it is, your very own masterpiece! "
+                "Just look at that. I knew you could do it."
+            )
+        except Exception as e:
+            logger.error(f"Failed to generate painting: {e}")
+            await params.result_callback(
+                "Well, looks like we had a happy little accident with the image generation. "
+                "But that's okay — every painting is already a masterpiece in its own way."
+            )
+
     async def handle_set_color(params: FunctionCallParams):
         color_name: str = params.arguments.get("color_name", "titanium_white")
         hex_color = BOB_ROSS_COLORS.get(color_name, "#FAFAFA")
@@ -546,6 +670,7 @@ async def run_bot(room_url: str, token: str):
     llm.register_function("remove_element", handle_remove_element)
     llm.register_function("list_elements", handle_list_elements)
     llm.register_function("bobrossify", handle_bobrossify)
+    llm.register_function("generate_painting", handle_generate_painting)
     llm.register_function("set_color", handle_set_color)
     llm.register_function("set_background", handle_set_background)
     llm.register_function("clear_canvas", handle_clear_canvas)
@@ -566,7 +691,7 @@ async def run_bot(room_url: str, token: str):
 
     task = PipelineTask(
         pipeline,
-        params=PipelineParams(allow_interruptions=False),
+        params=PipelineParams(allow_interruptions=True),
         observers=[rtvi_observer],
     )
 
@@ -575,7 +700,11 @@ async def run_bot(room_url: str, token: str):
     async def on_client_message(processor, message):
         try:
             logger.info(f"Client message: type={message.type}, data={message.data}")
-            if message.type == "stroke":
+            if message.type == "interrupt":
+                logger.info("Client requested interruption (spacebar)")
+                await task.queue_frame(InterruptionFrame())
+                return
+            elif message.type == "stroke":
                 # User painted something on the canvas
                 data = message.data if isinstance(message.data, dict) else {}
                 color = data.get("color", "unknown")

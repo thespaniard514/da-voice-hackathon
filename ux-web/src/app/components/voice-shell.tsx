@@ -665,7 +665,29 @@ function TranscriptDisplay() {
   );
 }
 
-function BobStatus({ isSpeaking }: { isSpeaking: boolean }) {
+function BobStatus({
+  isSpeaking,
+  isInterrupting,
+}: {
+  isSpeaking: boolean;
+  isInterrupting: boolean;
+}) {
+  const label = isInterrupting
+    ? "Interrupting..."
+    : isSpeaking
+      ? "Bob is painting..."
+      : "Listening...";
+  const dotColor = isInterrupting
+    ? "#fe7453"
+    : isSpeaking
+      ? "#ffdd79"
+      : "#484848";
+  const glowColor = isInterrupting
+    ? "0 0 8px #fe7453"
+    : isSpeaking
+      ? "0 0 8px #ffdd79"
+      : "none";
+
   return (
     <div
       style={{
@@ -677,13 +699,14 @@ function BobStatus({ isSpeaking }: { isSpeaking: boolean }) {
         padding: "0.4rem 1rem",
         borderRadius: "2rem",
         fontSize: "0.8rem",
-        color: "#ffdd79",
+        color: isInterrupting ? "#fe7453" : "#ffdd79",
         display: "flex",
         alignItems: "center",
         gap: "0.5rem",
-        boxShadow: isSpeaking
-          ? "0 0 20px rgba(255,221,121,0.2)"
-          : "0 4px 12px rgba(0,0,0,0.3)",
+        boxShadow:
+          isSpeaking || isInterrupting
+            ? "0 0 20px rgba(255,221,121,0.2)"
+            : "0 4px 12px rgba(0,0,0,0.3)",
         transition: "box-shadow 0.3s ease",
       }}
     >
@@ -692,12 +715,17 @@ function BobStatus({ isSpeaking }: { isSpeaking: boolean }) {
           width: 8,
           height: 8,
           borderRadius: "50%",
-          background: isSpeaking ? "#ffdd79" : "#484848",
-          boxShadow: isSpeaking ? "0 0 8px #ffdd79" : "none",
+          background: dotColor,
+          boxShadow: glowColor,
           transition: "all 0.3s",
         }}
       />
-      {isSpeaking ? "Bob is painting..." : "Listening..."}
+      {label}
+      {isSpeaking && !isInterrupting && (
+        <span style={{ fontSize: "0.65rem", color: "#767575", marginLeft: "0.25rem" }}>
+          (space to interrupt)
+        </span>
+      )}
     </div>
   );
 }
@@ -782,6 +810,47 @@ function ConnectedUI({
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
 }) {
   const client = usePipecatClient();
+  const [isInterrupting, setIsInterrupting] = useState(false);
+  const interruptSentRef = useRef(false);
+  const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+  const [showGenerated, setShowGenerated] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  // Spacebar hold to interrupt bot speech
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || e.repeat) return;
+      // Don't interrupt if user is typing in an input
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      )
+        return;
+      e.preventDefault();
+      if (!interruptSentRef.current && isSpeaking) {
+        interruptSentRef.current = true;
+        setIsInterrupting(true);
+        try {
+          client?.sendClientMessage("interrupt", {});
+        } catch (err) {
+          console.error("Failed to send interrupt:", err);
+        }
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      interruptSentRef.current = false;
+      setIsInterrupting(false);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [client, isSpeaking]);
 
   // Listen for server messages (bot painting on canvas)
   useRTVIClientEvent(
@@ -789,6 +858,20 @@ function ConnectedUI({
     useCallback(
       (msg: any) => {
         const data = msg?.data ?? msg;
+        console.log("[serverMessage] received:", JSON.stringify(data));
+
+        // State-only handlers (no canvas needed)
+        if (data?.type === "generated_painting") {
+          const b64 = data.image as string;
+          setGeneratedImage(`data:image/png;base64,${b64}`);
+          setIsGenerating(false);
+          setTimeout(() => setShowGenerated(true), 100);
+          return;
+        } else if (data?.type === "generating_painting") {
+          setIsGenerating(true);
+          return;
+        }
+
         const canvas = canvasRef.current;
         if (!canvas) return;
         const ctx = canvas.getContext("2d");
@@ -890,6 +973,8 @@ function ConnectedUI({
 
   return (
     <div style={{ display: "flex", width: "100%", height: "100vh" }}>
+      {/* Keyframe for generating pulse animation */}
+      <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }`}</style>
       {/* Left sidebar */}
       <div
         style={{
@@ -978,7 +1063,120 @@ function ConnectedUI({
           onStroke={handleStroke}
           canvasRef={canvasRef}
         />
-        <BobStatus isSpeaking={isSpeaking} />
+
+        {/* Generated painting overlay with fade transition */}
+        {generatedImage && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "2rem",
+              background: showGenerated ? "rgba(14, 14, 14, 0.95)" : "transparent",
+              opacity: showGenerated ? 1 : 0,
+              transition: "opacity 1.5s ease-in-out, background 1.5s ease-in-out",
+              pointerEvents: showGenerated ? "auto" : "none",
+              zIndex: 10,
+            }}
+          >
+            <div style={{ position: "relative" }}>
+              {/* Wood frame for generated image */}
+              <div
+                style={{
+                  padding: "12px",
+                  borderRadius: "4px",
+                  background:
+                    "linear-gradient(145deg, #5C3A1E 0%, #3E2712 50%, #5C3A1E 100%)",
+                  boxShadow:
+                    "0 12px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)",
+                }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={generatedImage}
+                  alt="Generated Bob Ross painting"
+                  style={{
+                    display: "block",
+                    maxWidth: "960px",
+                    maxHeight: "600px",
+                    width: "100%",
+                    height: "auto",
+                    borderRadius: "2px",
+                  }}
+                />
+              </div>
+              {/* Back to canvas button */}
+              <button
+                onClick={() => {
+                  setShowGenerated(false);
+                  // Clear the image after fade-out completes
+                  setTimeout(() => setGeneratedImage(null), 1500);
+                }}
+                style={{
+                  position: "absolute",
+                  bottom: "-3rem",
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  background: "rgba(26, 25, 25, 0.85)",
+                  backdropFilter: "blur(12px)",
+                  border: "none",
+                  color: "#ffdd79",
+                  padding: "0.5rem 1.5rem",
+                  borderRadius: "2rem",
+                  cursor: "pointer",
+                  fontSize: "0.85rem",
+                  fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif",
+                  fontWeight: 600,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+                  transition: "background 0.2s ease",
+                }}
+              >
+                Back to Canvas
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Generating indicator */}
+        {isGenerating && (
+          <div
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              background: "rgba(26, 25, 25, 0.9)",
+              backdropFilter: "blur(16px)",
+              padding: "1.5rem 2.5rem",
+              borderRadius: "1rem",
+              color: "#ffdd79",
+              fontSize: "1rem",
+              fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif",
+              fontWeight: 600,
+              boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+              zIndex: 5,
+              display: "flex",
+              alignItems: "center",
+              gap: "0.75rem",
+            }}
+          >
+            <span
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                background: "#ffdd79",
+                boxShadow: "0 0 8px #ffdd79",
+                animation: "pulse 1.5s ease-in-out infinite",
+              }}
+            />
+            Creating your masterpiece...
+          </div>
+        )}
+
+        <BobStatus isSpeaking={isSpeaking} isInterrupting={isInterrupting} />
         <CanvasToolbar
           onClear={() => {
             const canvas = canvasRef.current;

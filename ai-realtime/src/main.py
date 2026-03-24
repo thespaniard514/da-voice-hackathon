@@ -104,3 +104,4 @@ async def connect():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+

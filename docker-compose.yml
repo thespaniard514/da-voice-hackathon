@@ -5,6 +5,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      - ./ai-realtime/src:/app/src
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
@@ -17,6 +19,9 @@ services:
       - "3000:3000"
     env_file:
       - .env
+    volumes:
+      - ./ux-web/src:/app/src
+      - ./ux-web/public:/app/public
     depends_on:
       server:
         condition: service_healthy
