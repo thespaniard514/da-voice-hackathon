@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from typing import TypedDict
 
 from pipecat.frames.frames import EndFrame, LLMMessagesAppendFrame
 from pipecat.pipeline.pipeline import Pipeline
@@ -23,7 +24,7 @@ from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from loguru import logger
 
 # Bob Ross color palette
-BOB_ROSS_COLORS = {
+BOB_ROSS_COLORS: dict[str, str] = {
     "sap_green": "#0A3410",
     "van_dyke_brown": "#462806",
     "titanium_white": "#FAFAFA",
@@ -38,13 +39,47 @@ BOB_ROSS_COLORS = {
     "dark_sienna": "#3C1414",
 }
 
-# Current canvas state
-current_color = "titanium_white"
+
+class CanvasElement(TypedDict, total=False):
+    """A tracked element on the canvas, used for retained-mode rendering."""
+    id: str
+    element_type: str  # rect, circle, ellipse, line, polygon, text
+    x: float
+    y: float
+    width: float
+    height: float
+    radius: float
+    rx: float
+    ry: float
+    x2: float
+    y2: float
+    points: list[list[float]]
+    text: str
+    font_size: float
+    fill: str
+    stroke: str
+    stroke_width: float
+    opacity: float
+
+
+# Unique element ID counter (per bot session)
+_element_counter = 0
+
+
+def _next_element_id() -> str:
+    global _element_counter
+    _element_counter += 1
+    return f"el_{_element_counter}"
 
 
 async def run_bot(room_url: str, token: str):
-    global current_color
-    current_color = "titanium_white"
+    global _element_counter
+    _element_counter = 0
+
+    # Retained element list — the backend is the source of truth
+    canvas_elements: list[CanvasElement] = []
+    # Background state (so redraws preserve it)
+    background_state: dict[str, str] = {}
 
     transport = DailyTransport(
         room_url,
@@ -78,18 +113,20 @@ async def run_bot(room_url: str, token: str):
 
     tools = ToolsSchema(
         standard_tools=[
+            # --- Original scenic shape tool ---
             FunctionSchema(
                 name="draw_shape",
                 description=(
-                    "Draw a shape on the shared painting canvas. Use this to paint elements "
+                    "Draw a scenic shape on the shared painting canvas. Use this to paint elements "
                     "like trees, mountains, clouds, bushes, a lake, a cabin, or the sun. "
-                    "Coordinates are percentages of canvas size (0-100)."
+                    "Coordinates are percentages of canvas size (0-100). These are pre-built "
+                    "scenic shapes with automatic styling."
                 ),
                 properties={
                     "shape": {
                         "type": "string",
                         "enum": ["tree", "mountain", "cloud", "bush", "lake", "cabin", "sun", "path"],
-                        "description": "The type of shape/element to paint",
+                        "description": "The type of scenic element to paint",
                     },
                     "color": {
                         "type": "string",
@@ -111,6 +148,136 @@ async def run_bot(room_url: str, token: str):
                 },
                 required=["shape", "color", "x", "y", "size"],
             ),
+
+            # --- New: add a basic SVG-like element ---
+            FunctionSchema(
+                name="add_element",
+                description=(
+                    "Add a basic shape element to the canvas. Unlike draw_shape (which draws "
+                    "pre-built scenic shapes), this draws primitive geometric shapes that you "
+                    "can later remove by ID. Use this for custom compositions. "
+                    "Coordinates and sizes are percentages of canvas (0-100)."
+                ),
+                properties={
+                    "element_type": {
+                        "type": "string",
+                        "enum": ["rect", "circle", "ellipse", "line", "polygon", "text"],
+                        "description": "The type of primitive shape to add",
+                    },
+                    "x": {
+                        "type": "number",
+                        "description": "X position as percentage (0=left, 100=right)",
+                    },
+                    "y": {
+                        "type": "number",
+                        "description": "Y position as percentage (0=top, 100=bottom)",
+                    },
+                    "width": {
+                        "type": "number",
+                        "description": "Width as percentage of canvas (for rect/ellipse). Default 10.",
+                    },
+                    "height": {
+                        "type": "number",
+                        "description": "Height as percentage of canvas (for rect/ellipse). Default 10.",
+                    },
+                    "radius": {
+                        "type": "number",
+                        "description": "Radius as percentage of canvas (for circle). Default 5.",
+                    },
+                    "x2": {
+                        "type": "number",
+                        "description": "End X percentage (for line). Default same as x.",
+                    },
+                    "y2": {
+                        "type": "number",
+                        "description": "End Y percentage (for line). Default same as y.",
+                    },
+                    "points": {
+                        "type": "array",
+                        "items": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                        },
+                        "description": "Array of [x, y] percentage pairs (for polygon). E.g. [[10,50],[50,10],[90,50]].",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Text content (for text element).",
+                    },
+                    "font_size": {
+                        "type": "number",
+                        "description": "Font size as percentage of canvas height (for text). Default 5.",
+                    },
+                    "fill": {
+                        "type": "string",
+                        "description": "Fill color as hex (e.g. '#0A3410') or Bob Ross color name. Default 'sap_green'.",
+                    },
+                    "stroke": {
+                        "type": "string",
+                        "description": "Stroke/outline color as hex or Bob Ross color name. Default none.",
+                    },
+                    "stroke_width": {
+                        "type": "number",
+                        "description": "Stroke width in pixels. Default 0 (no stroke).",
+                    },
+                    "opacity": {
+                        "type": "number",
+                        "description": "Opacity from 0.0 (transparent) to 1.0 (opaque). Default 1.0.",
+                    },
+                },
+                required=["element_type", "x", "y"],
+            ),
+
+            # --- New: remove element by ID ---
+            FunctionSchema(
+                name="remove_element",
+                description=(
+                    "Remove a previously added element from the canvas by its ID. "
+                    "The canvas will be redrawn without that element. "
+                    "Use list_elements first if you need to find the element's ID."
+                ),
+                properties={
+                    "element_id": {
+                        "type": "string",
+                        "description": "The ID of the element to remove (e.g. 'el_3').",
+                    },
+                },
+                required=["element_id"],
+            ),
+
+            # --- New: list current canvas elements ---
+            FunctionSchema(
+                name="list_elements",
+                description=(
+                    "Get a list of all elements currently on the canvas with their IDs, "
+                    "types, positions, and properties. Use this to understand what's on "
+                    "the canvas before adding or removing elements."
+                ),
+                properties={},
+                required=[],
+            ),
+
+            # --- New: apply Bob Ross painterly effect ---
+            FunctionSchema(
+                name="bobrossify",
+                description=(
+                    "Apply a painterly Bob Ross effect to the entire canvas, making it "
+                    "look like an oil painting from 'The Joy of Painting'. This adds "
+                    "soft brush strokes, warm color blending, and a dreamy glow. "
+                    "Call this when the painting is complete to give it the final "
+                    "Bob Ross magic touch."
+                ),
+                properties={
+                    "intensity": {
+                        "type": "string",
+                        "enum": ["subtle", "medium", "full"],
+                        "description": "How strongly to apply the painterly effect. Default 'medium'.",
+                    },
+                },
+                required=[],
+            ),
+
+            # --- Original tools ---
             FunctionSchema(
                 name="set_color",
                 description=(
@@ -146,7 +313,7 @@ async def run_bot(room_url: str, token: str):
             ),
             FunctionSchema(
                 name="clear_canvas",
-                description="Clear the entire canvas to start fresh with a brand new painting.",
+                description="Clear the entire canvas and remove all elements to start fresh.",
                 properties={},
                 required=[],
             ),
@@ -167,10 +334,18 @@ async def run_bot(room_url: str, token: str):
                 "- Suggest colors using their Bob Ross names (Sap Green, Van Dyke Brown, etc.)\n"
                 "- Keep responses concise — 1-3 sentences, as if narrating while painting\n\n"
                 "You are co-painting with the user on a shared canvas. You can:\n"
-                "1. Paint shapes on the canvas using draw_shape (trees, mountains, clouds, etc.)\n"
-                "2. Change the user's brush color using set_color\n"
-                "3. Set the background/sky using set_background\n"
-                "4. Clear the canvas to start fresh\n\n"
+                "1. Paint scenic shapes using draw_shape (trees, mountains, clouds, etc.)\n"
+                "2. Add basic geometric elements using add_element (rect, circle, ellipse, line, polygon, text) — each gets a unique ID\n"
+                "3. Remove specific elements using remove_element with their ID\n"
+                "4. List all current canvas elements using list_elements\n"
+                "5. Change the user's brush color using set_color\n"
+                "6. Set the background/sky using set_background\n"
+                "7. Clear the canvas to start fresh using clear_canvas\n"
+                "8. Apply a Bob Ross painterly effect using bobrossify — use this when the painting is complete!\n\n"
+                "When building a composition, use add_element for precise control over shapes. "
+                "Each element gets a unique ID so you can remove or reference it later. "
+                "When the user is happy with the painting, suggest using bobrossify to give it "
+                "that signature Bob Ross oil-painting look.\n\n"
                 "Start by welcoming the user warmly and suggesting you begin with a nice sky. "
                 "As you paint, narrate what you're doing, just like on the TV show. "
                 "When the user paints something, comment on it encouragingly."
@@ -186,6 +361,15 @@ async def run_bot(room_url: str, token: str):
         ),
     )
 
+    # --- Helper: resolve color names to hex ---
+    def resolve_color(color_value: str) -> str:
+        """Resolve a Bob Ross color name or hex value to hex."""
+        if color_value in BOB_ROSS_COLORS:
+            return BOB_ROSS_COLORS[color_value]
+        if color_value.startswith("#"):
+            return color_value
+        return "#0A3410"  # default sap green
+
     # --- Tool handlers ---
 
     async def handle_draw_shape(params: FunctionCallParams):
@@ -195,9 +379,22 @@ async def run_bot(room_url: str, token: str):
         y = params.arguments.get("y", 50)
         size = params.arguments.get("size", 15)
         hex_color = BOB_ROSS_COLORS.get(color, "#0A3410")
-        logger.info(f"Bob painting: {shape} at ({x},{y}) size={size} color={color}")
+
+        # Track as an element so it shows up in list_elements
+        element_id = _next_element_id()
+        element: CanvasElement = {
+            "id": element_id,
+            "element_type": f"scenic_{shape}",
+            "x": x,
+            "y": y,
+            "fill": hex_color,
+        }
+        canvas_elements.append(element)
+
+        logger.info(f"Bob painting: {shape} at ({x},{y}) size={size} color={color} [id={element_id}]")
         await rtvi.send_server_message({
             "type": "draw_shape",
+            "id": element_id,
             "shape": shape,
             "color": hex_color,
             "color_name": color,
@@ -205,13 +402,116 @@ async def run_bot(room_url: str, token: str):
             "y": y,
             "size": size,
         })
-        await params.result_callback(f"Painted a {shape} using {color.replace('_', ' ').title()}.")
+        await params.result_callback(
+            f"Painted a {shape} using {color.replace('_', ' ').title()} (id={element_id})."
+        )
+
+    async def handle_add_element(params: FunctionCallParams):
+        element_type: str = params.arguments.get("element_type", "rect")
+        x: float = params.arguments.get("x", 50)
+        y: float = params.arguments.get("y", 50)
+        fill_raw: str = params.arguments.get("fill", "sap_green")
+        stroke_raw: str = params.arguments.get("stroke", "")
+        fill = resolve_color(fill_raw)
+        stroke = resolve_color(stroke_raw) if stroke_raw else ""
+
+        element_id = _next_element_id()
+        element: CanvasElement = {
+            "id": element_id,
+            "element_type": element_type,
+            "x": x,
+            "y": y,
+            "fill": fill,
+            "stroke": stroke,
+            "stroke_width": params.arguments.get("stroke_width", 0),
+            "opacity": params.arguments.get("opacity", 1.0),
+        }
+
+        # Type-specific properties
+        if element_type == "rect":
+            element["width"] = params.arguments.get("width", 10)
+            element["height"] = params.arguments.get("height", 10)
+        elif element_type == "circle":
+            element["radius"] = params.arguments.get("radius", 5)
+        elif element_type == "ellipse":
+            element["rx"] = params.arguments.get("width", 10) / 2
+            element["ry"] = params.arguments.get("height", 5) / 2
+        elif element_type == "line":
+            element["x2"] = params.arguments.get("x2", x)
+            element["y2"] = params.arguments.get("y2", y)
+        elif element_type == "polygon":
+            element["points"] = params.arguments.get("points", [[x, y]])
+        elif element_type == "text":
+            element["text"] = params.arguments.get("text", "")
+            element["font_size"] = params.arguments.get("font_size", 5)
+
+        canvas_elements.append(element)
+
+        logger.info(f"Added element: {element_type} at ({x},{y}) [id={element_id}]")
+        await rtvi.send_server_message({
+            "type": "add_element",
+            "element": element,
+        })
+        await params.result_callback(
+            f"Added {element_type} element (id={element_id}) at position ({x}, {y})."
+        )
+
+    async def handle_remove_element(params: FunctionCallParams):
+        element_id: str = params.arguments.get("element_id", "")
+        removed = False
+        for i, el in enumerate(canvas_elements):
+            if el.get("id") == element_id:
+                canvas_elements.pop(i)
+                removed = True
+                break
+
+        if not removed:
+            await params.result_callback(f"Element '{element_id}' not found on canvas.")
+            return
+
+        logger.info(f"Removed element: {element_id}, triggering full redraw")
+        # Send full redraw: background + all remaining elements
+        await rtvi.send_server_message({
+            "type": "full_redraw",
+            "background": background_state,
+            "elements": canvas_elements,
+        })
+        await params.result_callback(
+            f"Removed element '{element_id}'. Canvas redrawn with {len(canvas_elements)} remaining elements."
+        )
+
+    async def handle_list_elements(params: FunctionCallParams):
+        if not canvas_elements:
+            await params.result_callback("The canvas is empty — no tracked elements yet.")
+            return
+
+        summary_parts: list[str] = []
+        for el in canvas_elements:
+            el_id = el.get("id", "?")
+            el_type = el.get("element_type", "?")
+            el_x = el.get("x", 0)
+            el_y = el.get("y", 0)
+            summary_parts.append(f"  - {el_id}: {el_type} at ({el_x}, {el_y})")
+
+        summary = f"Canvas has {len(canvas_elements)} elements:\n" + "\n".join(summary_parts)
+        logger.info(f"Listed {len(canvas_elements)} elements")
+        await params.result_callback(summary)
+
+    async def handle_bobrossify(params: FunctionCallParams):
+        intensity: str = params.arguments.get("intensity", "medium")
+        logger.info(f"Applying Bob Ross painterly effect: intensity={intensity}")
+        await rtvi.send_server_message({
+            "type": "bobrossify",
+            "intensity": intensity,
+        })
+        await params.result_callback(
+            f"Applied the Bob Ross magic touch ({intensity} intensity). "
+            "Now that's a happy little painting!"
+        )
 
     async def handle_set_color(params: FunctionCallParams):
-        global current_color
-        color_name = params.arguments.get("color_name", "titanium_white")
+        color_name: str = params.arguments.get("color_name", "titanium_white")
         hex_color = BOB_ROSS_COLORS.get(color_name, "#FAFAFA")
-        current_color = color_name
         logger.info(f"Bob set brush color to {color_name} ({hex_color})")
         await rtvi.send_server_message({
             "type": "set_color",
@@ -221,8 +521,10 @@ async def run_bot(room_url: str, token: str):
         await params.result_callback(f"Brush color changed to {color_name.replace('_', ' ').title()}.")
 
     async def handle_set_background(params: FunctionCallParams):
-        color_top = params.arguments.get("color_top", "#1a0533")
-        color_bottom = params.arguments.get("color_bottom", "#ff6b35")
+        color_top: str = params.arguments.get("color_top", "#1a0533")
+        color_bottom: str = params.arguments.get("color_bottom", "#ff6b35")
+        background_state["color_top"] = color_top
+        background_state["color_bottom"] = color_bottom
         logger.info(f"Bob set background: {color_top} → {color_bottom}")
         await rtvi.send_server_message({
             "type": "set_background",
@@ -232,11 +534,17 @@ async def run_bot(room_url: str, token: str):
         await params.result_callback("Background gradient has been laid down.")
 
     async def handle_clear_canvas(params: FunctionCallParams):
+        canvas_elements.clear()
+        background_state.clear()
         logger.info("Bob cleared the canvas")
         await rtvi.send_server_message({"type": "clear_canvas"})
         await params.result_callback("Canvas cleared — a brand new world awaits.")
 
     llm.register_function("draw_shape", handle_draw_shape)
+    llm.register_function("add_element", handle_add_element)
+    llm.register_function("remove_element", handle_remove_element)
+    llm.register_function("list_elements", handle_list_elements)
+    llm.register_function("bobrossify", handle_bobrossify)
     llm.register_function("set_color", handle_set_color)
     llm.register_function("set_background", handle_set_background)
     llm.register_function("clear_canvas", handle_clear_canvas)
@@ -270,7 +578,6 @@ async def run_bot(room_url: str, token: str):
                 # User painted something on the canvas
                 data = message.data if isinstance(message.data, dict) else {}
                 color = data.get("color", "unknown")
-                bounds = data.get("bounds", "somewhere")
                 await task.queue_frames(
                     [
                         LLMMessagesAppendFrame(

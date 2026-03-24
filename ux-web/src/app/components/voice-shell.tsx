@@ -202,6 +202,200 @@ const SHAPE_DRAWERS: Record<
   cabin: drawCabin,
 };
 
+// ---- Canvas element types (retained mode) ----
+
+interface CanvasElement {
+  id: string;
+  element_type: string;
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+  radius?: number;
+  rx?: number;
+  ry?: number;
+  x2?: number;
+  y2?: number;
+  points?: number[][];
+  text?: string;
+  font_size?: number;
+  fill: string;
+  stroke?: string;
+  stroke_width?: number;
+  opacity?: number;
+}
+
+/**
+ * Draw a single primitive element on the canvas.
+ * Coordinates in the element are percentages (0-100) of canvas dimensions.
+ */
+function drawPrimitiveElement(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  el: CanvasElement
+) {
+  const px = (el.x / 100) * canvas.width;
+  const py = (el.y / 100) * canvas.height;
+
+  ctx.save();
+  ctx.globalAlpha = el.opacity ?? 1.0;
+
+  if (el.fill) {
+    ctx.fillStyle = el.fill;
+  }
+  if (el.stroke) {
+    ctx.strokeStyle = el.stroke;
+    ctx.lineWidth = el.stroke_width ?? 1;
+  }
+
+  switch (el.element_type) {
+    case "rect": {
+      const w = ((el.width ?? 10) / 100) * canvas.width;
+      const h = ((el.height ?? 10) / 100) * canvas.height;
+      if (el.fill) ctx.fillRect(px, py, w, h);
+      if (el.stroke) ctx.strokeRect(px, py, w, h);
+      break;
+    }
+    case "circle": {
+      const r = ((el.radius ?? 5) / 100) * Math.min(canvas.width, canvas.height);
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, Math.PI * 2);
+      if (el.fill) ctx.fill();
+      if (el.stroke) ctx.stroke();
+      break;
+    }
+    case "ellipse": {
+      const rx = ((el.rx ?? 5) / 100) * canvas.width;
+      const ry = ((el.ry ?? 3) / 100) * canvas.height;
+      ctx.beginPath();
+      ctx.ellipse(px, py, rx, ry, 0, 0, Math.PI * 2);
+      if (el.fill) ctx.fill();
+      if (el.stroke) ctx.stroke();
+      break;
+    }
+    case "line": {
+      const px2 = ((el.x2 ?? el.x) / 100) * canvas.width;
+      const py2 = ((el.y2 ?? el.y) / 100) * canvas.height;
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px2, py2);
+      ctx.strokeStyle = el.stroke || el.fill || "#000";
+      ctx.lineWidth = el.stroke_width ?? 2;
+      ctx.stroke();
+      break;
+    }
+    case "polygon": {
+      const pts = el.points ?? [];
+      if (pts.length < 2) break;
+      ctx.beginPath();
+      ctx.moveTo(
+        (pts[0][0] / 100) * canvas.width,
+        (pts[0][1] / 100) * canvas.height
+      );
+      for (let i = 1; i < pts.length; i++) {
+        ctx.lineTo(
+          (pts[i][0] / 100) * canvas.width,
+          (pts[i][1] / 100) * canvas.height
+        );
+      }
+      ctx.closePath();
+      if (el.fill) ctx.fill();
+      if (el.stroke) ctx.stroke();
+      break;
+    }
+    case "text": {
+      const fontSize =
+        ((el.font_size ?? 5) / 100) * canvas.height;
+      ctx.font = `${fontSize}px 'Be Vietnam Pro', system-ui, sans-serif`;
+      ctx.textBaseline = "top";
+      if (el.fill) ctx.fillText(el.text ?? "", px, py);
+      if (el.stroke) ctx.strokeText(el.text ?? "", px, py);
+      break;
+    }
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Apply painterly Bob Ross effect to the canvas.
+ * Uses layered canvas filters to simulate oil painting brush strokes.
+ */
+function applyBobRossEffect(
+  canvas: HTMLCanvasElement,
+  intensity: "subtle" | "medium" | "full"
+) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  // Settings per intensity
+  const settings = {
+    subtle: { blur: 1.5, saturate: 1.15, warmth: 0.03, passes: 1 },
+    medium: { blur: 2.5, saturate: 1.3, warmth: 0.06, passes: 2 },
+    full: { blur: 3.5, saturate: 1.5, warmth: 0.1, passes: 3 },
+  }[intensity];
+
+  // Step 1: Apply warm color overlay (Bob Ross paintings are warm-toned)
+  ctx.save();
+  ctx.globalCompositeOperation = "overlay";
+  ctx.globalAlpha = settings.warmth;
+  ctx.fillStyle = "#E3A857"; // Indian Yellow warmth
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
+
+  // Step 2: Apply soft blur passes to simulate brush strokes
+  // We use the canvas filter API for blur + saturation
+  for (let pass = 0; pass < settings.passes; pass++) {
+    // Capture current state
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+    // Create a temp canvas with filters
+    const tmpCanvas = document.createElement("canvas");
+    tmpCanvas.width = canvas.width;
+    tmpCanvas.height = canvas.height;
+    const tmpCtx = tmpCanvas.getContext("2d");
+    if (!tmpCtx) break;
+
+    tmpCtx.putImageData(imageData, 0, 0);
+
+    // Draw blurred version back with reduced opacity (blends sharp + soft)
+    ctx.save();
+    ctx.filter = `blur(${settings.blur}px) saturate(${settings.saturate})`;
+    ctx.globalAlpha = 0.4;
+    ctx.drawImage(tmpCanvas, 0, 0);
+    ctx.restore();
+  }
+
+  // Step 3: Add a very subtle vignette (dark corners = painting feel)
+  ctx.save();
+  const vignetteGrad = ctx.createRadialGradient(
+    canvas.width / 2,
+    canvas.height / 2,
+    canvas.width * 0.3,
+    canvas.width / 2,
+    canvas.height / 2,
+    canvas.width * 0.75
+  );
+  vignetteGrad.addColorStop(0, "transparent");
+  vignetteGrad.addColorStop(1, `rgba(10, 5, 0, ${settings.warmth * 2})`);
+  ctx.fillStyle = vignetteGrad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
+
+  // Step 4: Subtle canvas texture overlay
+  ctx.save();
+  ctx.globalCompositeOperation = "soft-light";
+  ctx.globalAlpha = 0.08;
+  for (let y = 0; y < canvas.height; y += 3) {
+    for (let x = 0; x < canvas.width; x += 3) {
+      const noise = Math.random() * 255;
+      ctx.fillStyle = `rgb(${noise},${noise},${noise})`;
+      ctx.fillRect(x, y, 3, 3);
+    }
+  }
+  ctx.restore();
+}
+
 // ---- Components ----
 
 function PaintCanvas({
@@ -607,6 +801,50 @@ function ConnectedUI({
           const sz = (pctSize / 100) * Math.min(canvas.width, canvas.height);
           const drawer = SHAPE_DRAWERS[shape];
           if (drawer) drawer(ctx, cx, cy, sz, color);
+        } else if (data?.type === "add_element") {
+          // Draw a primitive element (rect, circle, ellipse, line, polygon, text)
+          const el = data.element as CanvasElement;
+          if (el) drawPrimitiveElement(ctx, canvas, el);
+        } else if (data?.type === "full_redraw") {
+          // Full redraw after element removal: clear, redraw background, redraw all elements
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = "#F5F0E8";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+          // Redraw background if present
+          const bg = data.background as { color_top?: string; color_bottom?: string } | undefined;
+          if (bg?.color_top && bg?.color_bottom) {
+            const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            grad.addColorStop(0, bg.color_top);
+            grad.addColorStop(1, bg.color_bottom);
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+          }
+
+          // Redraw all remaining elements
+          const elements = data.elements as CanvasElement[] | undefined;
+          if (elements) {
+            for (const el of elements) {
+              // Scenic shapes (draw_shape) are stored with element_type like "scenic_tree"
+              if (el.element_type.startsWith("scenic_")) {
+                const shape = el.element_type.replace("scenic_", "");
+                const drawer = SHAPE_DRAWERS[shape];
+                if (drawer) {
+                  const cx = (el.x / 100) * canvas.width;
+                  const cy = (el.y / 100) * canvas.height;
+                  // Use a default size for scenic redraws
+                  const sz = (15 / 100) * Math.min(canvas.width, canvas.height);
+                  drawer(ctx, cx, cy, sz, el.fill);
+                }
+              } else {
+                drawPrimitiveElement(ctx, canvas, el);
+              }
+            }
+          }
+        } else if (data?.type === "bobrossify") {
+          // Apply painterly Bob Ross effect
+          const intensity = (data.intensity ?? "medium") as "subtle" | "medium" | "full";
+          applyBobRossEffect(canvas, intensity);
         } else if (data?.type === "set_background") {
           const { color_top, color_bottom } = data;
           const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
@@ -618,7 +856,6 @@ function ConnectedUI({
           onColorChange(data.color_name, data.color);
         } else if (data?.type === "clear_canvas") {
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          // Reset to canvas color
           ctx.fillStyle = "#F5F0E8";
           ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
