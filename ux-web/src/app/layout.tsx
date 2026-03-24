@@ -11,14 +11,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <link
           href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=Be+Vietnam+Pro:ital,wght@0,400;0,500;1,400&display=swap"
           rel="stylesheet"
         />
       </head>
-      <body style={{ margin: 0, fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+      <body suppressHydrationWarning style={{ margin: 0, fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
         {children}
       </body>
     </html>
