@@ -2,6 +2,37 @@
 
 This doc covers how the voice agent works end-to-end and how to build new interactions between the frontend and backend.
 
+## Project: Bob Ross Painting Buddy
+
+A voice AI painting companion where "Bob Ross" guides users through landscape painting on a shared HTML5 canvas. The bot speaks in Bob Ross's signature soothing style and can programmatically paint shapes on the canvas, while users can freehand paint and talk back.
+
+### Key Concept
+- **Voice-first**: User talks via microphone, Bob responds with TTS (shimmer voice at 0.9x speed)
+- **Shared canvas**: Both user (freehand drawing) and bot (tool-called shapes) paint on the same HTML5 canvas
+- **Bidirectional sync**: Bot sends `draw_shape`/`set_color`/`set_background`/`clear_canvas` via RTVI; user sends `stroke`/`color_pick` events back
+
+### Bot Tools
+| Tool | Purpose | Server Message |
+|------|---------|----------------|
+| `draw_shape(shape, color, x, y, size)` | Paint trees, mountains, clouds, etc. | `{type: "draw_shape", ...}` |
+| `set_color(color_name)` | Change user's brush color | `{type: "set_color", ...}` |
+| `set_background(color_top, color_bottom)` | Gradient sky/base layer | `{type: "set_background", ...}` |
+| `clear_canvas()` | Start fresh | `{type: "clear_canvas"}` |
+
+### Client Events (user → bot)
+| Event | When | Effect |
+|-------|------|--------|
+| `stroke` | User finishes a freehand stroke | Bob comments encouragingly |
+| `color_pick` | User clicks a palette swatch | Bob acknowledges the color choice |
+
+### Bob Ross Color Palette
+Sap Green, Van Dyke Brown, Titanium White, Phthalo Blue, Alizarin Crimson, Cadmium Yellow, Bright Red, Prussian Blue, Indian Yellow, Midnight Black
+
+### Canvas Shape Types
+`tree`, `mountain`, `cloud`, `bush`, `lake`, `cabin`, `sun`, `path`
+
+---
+
 ## Versions
 
 | Component | Package | Version |
@@ -21,7 +52,7 @@ This doc covers how the voice agent works end-to-end and how to build new intera
 
 ### Connection Lifecycle
 
-1. User clicks "Start Voice" → frontend calls `client.startBotAndConnect({ endpoint: "/api/connect" })`
+1. User clicks "Start Painting" → frontend calls `client.startBotAndConnect({ endpoint: "/api/connect" })`
 2. Next.js proxies to Python backend (`POST /api/connect`)
 3. Backend creates a Daily room + tokens, spawns bot in background task
 4. Both client and bot join the same Daily room via WebRTC
@@ -94,7 +125,7 @@ llm = OpenAILLMService(
 
 tts = OpenAITTSService(
     api_key=os.getenv("OPENAI_API_KEY"),
-    settings=OpenAITTSService.Settings(voice="alloy"),
+    settings=OpenAITTSService.Settings(voice="shimmer", speed=0.9),
 )
 ```
 
